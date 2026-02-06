@@ -1,0 +1,9 @@
+## Interface: 120000
+## Title: LastMount
+## Notes: Tracks your last used mount and resummons it via /click LastMountButton
+## Author: Senoy
+## Version: 1.0.1
+## IconTexture: Interface\Icons\Ability_Mount_RidingHorse
+## SavedVariables: LastMountDB
+
+LastMount.lua
