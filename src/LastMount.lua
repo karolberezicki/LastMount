@@ -13,6 +13,10 @@ local optionsCategory
 -- Lazy spell-to-mount lookup
 local spellToMount
 
+-- Throttle for COMPANION_UPDATE
+local companionUpdatePending = false
+local COMPANION_THROTTLE = 0.5
+
 local DB_DEFAULTS = {
     lastMountID = nil,
     fallbackMountID = nil,
@@ -65,7 +69,7 @@ local function BuildMountSpellLookup()
 end
 
 local function OnSpellcastSucceeded(unit, _, spellID)
-    if unit ~= "player" then return end
+    -- Unit is always "player" (filtered via RegisterUnitEvent)
     BuildMountSpellLookup()
     local mountID = spellToMount[spellID]
     if mountID then
@@ -77,12 +81,19 @@ end
 
 local function OnCompanionUpdate()
     if not IsMounted() then return end
-    local mountID = FindActiveMount()
-    if mountID then
-        if blacklist and blacklist[mountID] then return end
-        lastMountID = mountID
-        db.lastMountID = mountID
-    end
+    -- Throttle: coalesce rapid COMPANION_UPDATE bursts into a single scan
+    if companionUpdatePending then return end
+    companionUpdatePending = true
+    C_Timer.After(COMPANION_THROTTLE, function()
+        companionUpdatePending = false
+        if not IsMounted() then return end
+        local mountID = FindActiveMount()
+        if mountID then
+            if blacklist and blacklist[mountID] then return end
+            lastMountID = mountID
+            db.lastMountID = mountID
+        end
+    end)
 end
 
 ---------------------------------------------------------------------------
@@ -434,7 +445,44 @@ local function CreateOptionsPanel()
     panel._statusValue = statusValue
     panel._fbValue = fbValue
     panel._blListAnchor = blListAnchor
-    panel._blRows = {}
+
+    -- Frame pool for blacklist rows
+    local blRowPool = {}
+    local blRowPoolSize = 0
+
+    local function AcquireRow(parent)
+        for i = 1, blRowPoolSize do
+            local row = blRowPool[i]
+            if not row._inUse then
+                row._inUse = true
+                row:SetParent(parent)
+                row:Show()
+                return row
+            end
+        end
+        -- Create new row
+        local row = CreateFrame("Frame", nil, parent)
+        row:SetSize(400, 20)
+        row._nameStr = row:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+        row._nameStr:SetPoint("LEFT", 0, 0)
+        row._removeBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+        row._removeBtn:SetPoint("LEFT", row._nameStr, "RIGHT", 8, 0)
+        row._removeBtn:SetSize(70, 20)
+        row._removeBtn:SetText("Remove")
+        row._inUse = true
+        blRowPoolSize = blRowPoolSize + 1
+        blRowPool[blRowPoolSize] = row
+        return row
+    end
+
+    local function ReleaseAllRows()
+        for i = 1, blRowPoolSize do
+            local row = blRowPool[i]
+            row._inUse = false
+            row:Hide()
+            row:ClearAllPoints()
+        end
+    end
 
     function RefreshPanel()
         -- Status
@@ -445,36 +493,23 @@ local function CreateOptionsPanel()
         local fbName = GetMountName(fallbackMountID)
         fbValue:SetText(fbName and (fbName .. "  (ID: " .. (GetMountSpellID(fallbackMountID) or "?") .. ")") or "None")
 
-        -- Clear old blacklist rows
-        for _, row in ipairs(panel._blRows) do
-            row:Hide()
-            row:SetParent(nil)
-        end
-        wipe(panel._blRows)
+        -- Recycle old blacklist rows
+        ReleaseAllRows()
 
-        -- Build blacklist rows
+        -- Build blacklist rows (reusing pooled frames)
         local rowY = 0
         for mountID in pairs(blacklist) do
-            local row = CreateFrame("Frame", nil, blListAnchor)
+            local row = AcquireRow(blListAnchor)
             row:SetPoint("TOPLEFT", 0, rowY)
-            row:SetSize(400, 20)
 
-            local nameStr = row:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
-            nameStr:SetPoint("LEFT", 0, 0)
             local name = GetMountName(mountID) or "Unknown"
-            nameStr:SetText(name .. "  (ID: " .. (GetMountSpellID(mountID) or "?") .. ")")
+            row._nameStr:SetText(name .. "  (ID: " .. (GetMountSpellID(mountID) or "?") .. ")")
 
-            local removeBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-            removeBtn:SetPoint("LEFT", nameStr, "RIGHT", 8, 0)
-            removeBtn:SetSize(70, 20)
-            removeBtn:SetText("Remove")
-            removeBtn:SetScript("OnClick", function()
+            row._removeBtn:SetScript("OnClick", function()
                 blacklist[mountID] = nil
                 RefreshPanel()
             end)
 
-            row:Show()
-            table.insert(panel._blRows, row)
             rowY = rowY - 22
         end
     end
@@ -504,7 +539,7 @@ frame:SetScript("OnEvent", function(self, event, ...)
             CreateOptionsPanel()
             self:UnregisterEvent("ADDON_LOADED")
             self:RegisterEvent("PLAYER_LOGIN")
-            self:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+            self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
             pcall(self.RegisterEvent, self, "COMPANION_UPDATE")
         end
     elseif event == "PLAYER_LOGIN" then
