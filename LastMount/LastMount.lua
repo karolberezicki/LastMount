@@ -48,8 +48,8 @@ end
 local function FindActiveMount()
     local mountIDs = C_MountJournal.GetMountIDs()
     for _, mountID in ipairs(mountIDs) do
-        local name, spellID, _, isActive = C_MountJournal.GetMountInfoByID(mountID)
-        if isActive then
+        local name, spellID, _, isActive, _, _, _, _, _, _, isCollected = C_MountJournal.GetMountInfoByID(mountID)
+        if isActive and isCollected then
             return mountID
         end
     end
@@ -70,22 +70,27 @@ end
 
 local function OnSpellcastSucceeded(unit, _, spellID)
     -- Unit is always "player" (filtered via RegisterUnitEvent)
+    if UnitIsDeadOrGhost("player") then return end
     BuildMountSpellLookup()
     local mountID = spellToMount[spellID]
     if mountID then
         if blacklist and blacklist[mountID] then return end
+        local _, _, _, _, _, _, _, _, _, _, isCollected = C_MountJournal.GetMountInfoByID(mountID)
+        if not isCollected then return end
         lastMountID = mountID
         db.lastMountID = mountID
     end
 end
 
 local function OnCompanionUpdate()
+    if UnitIsDeadOrGhost("player") then return end
     if not IsMounted() then return end
     -- Throttle: coalesce rapid COMPANION_UPDATE bursts into a single scan
     if companionUpdatePending then return end
     companionUpdatePending = true
     C_Timer.After(COMPANION_THROTTLE, function()
         companionUpdatePending = false
+        if UnitIsDeadOrGhost("player") then return end
         if not IsMounted() then return end
         local mountID = FindActiveMount()
         if mountID then
